@@ -5,6 +5,7 @@ from flo_ai.models.flo_routed_team import FloRoutedTeam
 from flo_ai.models.delegate import Delegate
 from langchain.agents import AgentExecutor
 from flo_ai.state.flo_state import TeamFloAgentState, STATE_NAME_MESSAGES
+from flo_ai.models.flo_member import FloMember
 from langchain_core.messages import AIMessage, HumanMessage
 from flo_ai.models.flo_executable import ExecutableType
 from flo_ai.state.flo_session import FloSession
@@ -16,39 +17,94 @@ from flo_ai.callbacks.flo_callbacks import (
 )
 from flo_ai.common.flo_logger import get_logger
 from flo_ai.state.flo_output_collector import FloOutputCollector
+from abc import ABC
+from typing import Any, Dict
+from langchain_core.runnables import Runnable
 
-
-class FloNode:
+class FloNode(FloMember, ABC):
     def __init__(
-        self,
-        func: functools.partial,
-        name: str,
-        kind: ExecutableType,
-        delegate: Optional[Delegate] = None,
-        async_func: functools.partial = None,
-        agent_executable=None,
+        self, 
+        name: str, 
+        type: str = "node",
+        model_name: Optional[str] = None,
+        executor: Optional[Runnable] = None
     ) -> None:
-        self.name = name
-        self.func = func
-        self.kind: ExecutableType = kind
-        self.delegate = delegate
-        self.async_func = async_func
-        self.agent_executable = agent_executable
+        """
+        Args:
+            name: ノードの名前
+            type: ノードの種類
+            model_name: 使用するモデル名
+            executor: 実行エンジン（ローカル実行用）
+        """
+        super().__init__(name, type)
+        self.model_name = model_name
+        self.executor = executor
 
-    def invoke(self, query, config):
-        return self.func({STATE_NAME_MESSAGES: [HumanMessage(content=query)]})
+    async def ainvoke(
+        self, 
+        state: Dict[str, Any], 
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """ノードの非同期実行
 
-    async def ainvoke(self, query, config):
-        return await self.async_func(
-            {STATE_NAME_MESSAGES: [HumanMessage(content=query)]}
-        )
+        Args:
+            state: 現在の状態
+            config: 実行時設定
 
-    def draw(self, xray=True):
-        return (
-            self.agent_executable.get_graph().draw_mermaid_png()
-            if self.agent_executable is not None
-            else None
-        )
+        Returns:
+            Dict[str, Any]: 更新された状態
+
+        Raises:
+            NotImplementedError: 未実装の場合
+        """
+        raise NotImplementedError("ainvoke must be implemented by subclass")
+
+    def invoke(
+        self, 
+        state: Dict[str, Any], 
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """ノードの同期実行
+
+        Args:
+            state: 現在の状態
+            config: 実行時設定
+
+        Returns:
+            Dict[str, Any]: 更新された状態
+        """
+        if self.executor is None:
+            raise ValueError("Executor is required for synchronous invocation")
+        return self.executor.invoke(state, config)
+
+    def draw(self, xray: bool = True) -> Optional[bytes]:
+        """ノードの可視化
+
+        Args:
+            xray: 詳細表示フラグ
+
+        Returns:
+            Optional[bytes]: 可視化結果
+        """
+        if self.executor and hasattr(self.executor, 'get_graph'):
+            return self.executor.get_graph().draw_mermaid_png()
+        return None
+    
+    @staticmethod
+    def _get_last_message(state: Dict[str, Any]) -> str:
+        """最後のメッセージを取得"""
+        return state[STATE_NAME_MESSAGES][-1].content
+
+    @staticmethod
+    def _join_graph(response: dict):
+        """グラフの結果を結合"""
+        return {STATE_NAME_MESSAGES: [response[STATE_NAME_MESSAGES][-1]]}
+
+    @staticmethod
+    def _filter_callbacks(session, type: Type) -> List:
+        """指定された型のコールバックをフィルタリング"""
+        cbs = session.callbacks
+        return list(filter(lambda callback: isinstance(callback, type), cbs))
 
     class Builder:
         def __init__(self, session: FloSession) -> None:
@@ -311,3 +367,81 @@ class FloNode:
                 'team_members': ', '.join(members),
             }
             return results
+
+class LocalFloNode(FloNode):
+    """ローカル実行用のノード実装"""
+    
+    def __init__(
+        self, 
+        name: str,
+        executor: Runnable,
+        model_name: Optional[str] = None,
+        type: str = "local",
+        session = None
+    ) -> None:
+        super().__init__(
+            name=name,
+            type=type,
+            model_name=model_name,
+            executor=executor
+        )
+        self.session = session
+
+    async def ainvoke(
+        self, 
+        state: Dict[str, Any], 
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """ローカルノードの非同期実行（コールバック含む）"""
+        agent_cbs: List[FloAgentCallback] = self._filter_callbacks(
+            self.session, 
+            FloAgentCallback
+        )
+        flo_cbs: List[FloCallback] = self._filter_callbacks(
+            self.session, 
+            FloCallback
+        )
+
+        # コールバックの実行
+        [callback.on_agent_start(self.name, self.model_name, state['messages']) 
+         for callback in agent_cbs + flo_cbs]
+
+        try:
+            result = await self.executor.ainvoke(state, config)
+            output = result if isinstance(result, str) else result['output']
+        except Exception as e:
+            [callback.on_agent_error(self.name, self.model_name, e) 
+             for callback in agent_cbs + flo_cbs]
+            raise e
+
+        [callback.on_agent_end(self.name, self.model_name, output) 
+         for callback in agent_cbs + flo_cbs]
+
+        return {STATE_NAME_MESSAGES: [AIMessage(content=output, name=self.name)]}
+
+class HTTPFloNode(FloNode):
+    """HTTPベースのノード実装（プレースホルダー）"""
+    pass
+
+class Builder:
+    """ノードビルダー"""
+    def __init__(self, session) -> None:
+        self.session = session
+
+    def build_from_agent(self, agent) -> FloNode:
+        """エージェントからノードを構築"""
+        if getattr(agent, 'type', None) == "http":
+            from flo_ai.models.http.node import HTTPFloNodeFactory
+            return HTTPFloNodeFactory.create_node(
+                endpoint=agent.endpoint,
+                name=agent.name,
+                model_name=agent.model_name
+            )
+        else:
+            return LocalFloNode(
+                name=agent.name,
+                executor=agent.executor,
+                model_name=agent.model_name,
+                session=self.session
+            )
+        
