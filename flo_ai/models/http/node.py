@@ -52,7 +52,7 @@ class HTTPFloNode(FloNode):
         self.config = config or HTTPRequestConfig()
         self.model_name = model_name
         self._client = httpx.AsyncClient(
-            timeout=self.config.timeout,
+            timeout=self.config.request_timeout,
             headers=self.config.headers
         )
 

@@ -1,43 +1,43 @@
 from typing import Any, Dict, Optional, List, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import httpx
 from .base import HTTPBaseTool, HTTPRequestConfig, HTTPToolError
 import asyncio
 from functools import partial
 
+
 class HTTPToolRequest(BaseModel):
     """HTTPツールへのリクエストの構造"""
-    tool_name: str = Field(..., description="ツールの名前")
+    name: str = Field(..., description="ツールの名前")
     inputs: Dict[str, Any] = Field(..., description="ツールへの入力パラメータ")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="追加のメタデータ")
 
 class HTTPToolClient(HTTPBaseTool):
     """HTTPツールのクライアント実装"""
-    
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     def __init__(
         self,
+        name: str,
+        description: str,
         endpoint: str,
-        tool_name: str,
         config: Optional[HTTPRequestConfig] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
     ):
         """
         Args:
-            endpoint: ツールのエンドポイントURL
-            tool_name: ツールの名前
-            config: HTTPリクエストの設定
+            name: ツールの名前
             description: ツールの説明
-            metadata: 追加のメタデータ
+            endpoint: ツールのエンドポイントURL
+            config: HTTPリクエストの設定
         """
         super().__init__(
+            name=name,
+            description=description,
             endpoint=endpoint,
-            config=config,
-            name=tool_name,
-            description=description
+            config=config
         )
-        self.tool_name = tool_name
-        self.metadata = metadata or {}
+        
         
     async def _prepare_request(
         self,
@@ -52,7 +52,7 @@ class HTTPToolClient(HTTPBaseTool):
             HTTPToolRequest: 準備されたリクエスト
         """
         return HTTPToolRequest(
-            tool_name=self.tool_name,
+            name=self.name,
             inputs=inputs,
             metadata=self.metadata
         )
@@ -109,20 +109,20 @@ class BatchHTTPToolClient:
             try:
                 result = await tool.arun(input_data)
                 return {
-                    "tool_name": tool.tool_name,
+                    "name": tool.name,
                     "status": "success",
                     "result": result
                 }
             except HTTPToolError as e:
                 return {
-                    "tool_name": tool.tool_name,
+                    "name": tool.name,
                     "status": "error",
                     "error": str(e),
                     "status_code": e.status_code
                 }
             except Exception as e:
                 return {
-                    "tool_name": tool.tool_name,
+                    "name": tool.name,
                     "status": "error",
                     "error": str(e)
                 }
@@ -158,7 +158,7 @@ class HTTPToolFactory:
     @staticmethod
     def create_tool(
         endpoint: str,
-        tool_name: str,
+        name: str,
         description: Optional[str] = None,
         config: Optional[HTTPRequestConfig] = None,
         metadata: Optional[Dict[str, Any]] = None
@@ -167,7 +167,7 @@ class HTTPToolFactory:
 
         Args:
             endpoint: ツールのエンドポイントURL
-            tool_name: ツールの名前
+            name: ツールの名前
             description: ツールの説明
             config: HTTPリクエストの設定
             metadata: 追加のメタデータ
@@ -175,13 +175,16 @@ class HTTPToolFactory:
         Returns:
             HTTPToolClient: 作成されたツール
         """
-        return HTTPToolClient(
+        tool_client = HTTPToolClient(
             endpoint=endpoint,
-            tool_name=tool_name,
+            name=name,
             description=description,
             config=config,
-            metadata=metadata
         )
+        if metadata:
+            tool_client.metadata = metadata
+        return tool_client
+
 
     @staticmethod
     def create_batch_client(

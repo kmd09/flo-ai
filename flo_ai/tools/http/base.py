@@ -4,12 +4,13 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 from abc import ABC
 from langchain.tools import BaseTool
+import asyncio
 
 class HTTPRequestConfig(BaseModel):
     """HTTP リクエストの設定"""
     model_config = ConfigDict(frozen=True)
 
-    timeout: float = Field(default=30.0, description="リクエストのタイムアウト時間（秒）")
+    request_timeout: float = Field(default=30.0, description="リクエストのタイムアウト時間（秒）")
     retry_attempts: int = Field(default=3, description="リトライ回数")
     retry_min_wait: float = Field(default=1.0, description="リトライ時の最小待機時間（秒）")
     retry_max_wait: float = Field(default=10.0, description="リトライ時の最大待機時間（秒）")
@@ -28,8 +29,16 @@ class HTTPToolError(Exception):
         self.status_code = status_code
         self.response = response
 
-class HTTPBaseTool(BaseTool, ABC):
+class HTTPBaseToolModel(BaseModel):
+    """HTTP ベースのツールのモデル"""
+    endpoint: str = Field(..., description="ツールのエンドポイントURL")
+    config: HTTPRequestConfig = Field(default_factory=HTTPRequestConfig, description="HTTPリクエストの設定")
+
+class HTTPBaseTool(BaseTool):
     """HTTP ベースのツールの基底クラス"""
+
+    endpoint: str = Field(..., description="ツールのエンドポイントURL")
+    config: HTTPRequestConfig = Field(default_factory=HTTPRequestConfig, description="HTTPリクエストの設定")
     
     def __init__(
         self,
@@ -45,11 +54,11 @@ class HTTPBaseTool(BaseTool, ABC):
             name: ツールの名前
             description: ツールの説明
         """
-        super().__init__(name=name, description=description)
+        super().__init__(name=name, description=description, endpoint=endpoint, config=config)
         self.endpoint = endpoint
         self.config = config or HTTPRequestConfig()
         self._client = httpx.AsyncClient(
-            timeout=self.config.timeout,
+            timeout=self.config.request_timeout,
             headers=self.config.headers
         )
 
@@ -118,14 +127,29 @@ class HTTPBaseTool(BaseTool, ABC):
         response = await self._make_request("POST", payload)
         return response.data
 
+    def _run(
+        self,
+        tool_input: Union[str, Dict[str, Any]],
+        **kwargs
+    ) -> Any:
+        """ツールの同期実行
+
+        Args:
+            tool_input: ツールへの入力
+            **kwargs: 追加のパラメータ
+
+        Returns:
+            Any: ツールの実行結果
+        """
+        return asyncio.run(self.arun(tool_input, **kwargs))
+
     def run(self, tool_input: Union[str, Dict[str, Any]], **kwargs) -> Any:
         """ツールを同期実行（非推奨）
 
         Note:
             可能な限り arun() の使用を推奨
         """
-        import asyncio
-        return asyncio.run(self.arun(tool_input, **kwargs))
+        return self._run(tool_input, **kwargs)
 
     async def __aenter__(self):
         return self

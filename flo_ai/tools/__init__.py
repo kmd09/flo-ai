@@ -1,3 +1,3 @@
-from flo_ai.tools.flo_tool import flotool
+from flo_ai.tools.flo_tool import flotool, FloToolConfig
 
-__all__ = ['flotool']
+__all__ = ['flotool', 'FloToolConfig']
