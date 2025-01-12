@@ -24,7 +24,12 @@ from langchain_core.runnables import Runnable
 class FloNode(FloMember, ABC):
     def __init__(
         self, 
-        name: str, 
+        func: functools.partial,
+        name: str,
+        kind: ExecutableType,
+        delegate: Optional[Delegate] = None,
+        async_func: functools.partial = None,
+        agent_executable=None,
         type: str = "node",
         model_name: Optional[str] = None,
         executor: Optional[Runnable] = None
@@ -39,6 +44,11 @@ class FloNode(FloMember, ABC):
         super().__init__(name, type)
         self.model_name = model_name
         self.executor = executor
+        self.kind: ExecutableType = kind
+        self.func = func
+        self.delegate = delegate
+        self.async_func = async_func
+        self.agent_executable = agent_executable
 
     async def ainvoke(
         self, 
